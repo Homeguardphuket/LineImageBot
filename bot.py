@@ -13,7 +13,6 @@ from linebot.models import (
 app = Flask(__name__)
 
 # --- 1. การตั้งค่า Config (ดึงจาก Railway Variables) ---
-# แนะนำให้ตั้งชื่อใน Railway ให้ตรงตามนี้ครับ
 LINE_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 IMGBB_KEY = os.getenv('IMGBB_API_KEY')
@@ -25,21 +24,6 @@ handler = WebhookHandler(LINE_SECRET)
 BASE_PATH = "/app/LineBackup"
 
 # --- 2. ฟังก์ชันช่วยงาน (Helper Functions) ---
-
-def upload_to_imgbb(image_data):
-    """อัปโหลดรูปไป ImgBB (ถ้าต้องการใช้)"""
-    if not IMGBB_KEY:
-        return None
-    url = "https://api.imgbb.com/1/upload"
-    payload = {
-        "key": IMGBB_KEY,
-        "image": base64.b64encode(image_data)
-    }
-    try:
-        res = requests.post(url, data=payload)
-        return res.json()["data"]["url"] if res.json()["success"] else None
-    except:
-        return None
 
 def get_storage_info(event):
     """วิเคราะห์ประเภทไฟล์และกำหนดโฟลเดอร์ปลายทาง"""
@@ -54,10 +38,11 @@ def get_storage_info(event):
         ext = os.path.splitext(f_name)[1].lower()
         
         # คัดแยกกลุ่ม Archives
-        if ext in ['.zip', '.rar', '.7z', '.tar', '.gz']:
+        archive_exts = ['.zip', '.rar', '.7z', '.tar', '.gz']
+        if ext in archive_exts:
             return "BackupArchives", f_name
         else:
-            return "BackupDocments", f_name # สะกดตามโครงสร้างเดิมของคุณ
+            return "BackupDocments", f_name
             
     return "Others", f"file_{event.message.id}"
 
@@ -73,7 +58,7 @@ def callback():
         abort(400)
     return 'OK'
 
-# --- 4. Main Backup Handler (รวมทุกประเภทไฟล์ในที่เดียว) ---
+# --- 4. Main Backup Handler (ไม่มีการแจ้งเตือนใน LINE) ---
 
 @handler.add(MessageEvent, message=(ImageMessage, VideoMessage, FileMessage))
 def handle_content_backup(event):
@@ -83,7 +68,8 @@ def handle_content_backup(event):
         sub_folder, file_name = get_storage_info(event)
         target_dir = os.path.join(BASE_PATH, sub_folder)
         
-        print(f"[INFO] Processing: {file_name} in {sub_folder}", flush=True)
+        # Log แจ้งเตือนใน Railway ว่าได้รับไฟล์แล้ว
+        print(f"[INFO] Received: {file_name} for {sub_folder}", flush=True)
 
         if not os.path.exists(target_dir):
             os.makedirs(target_dir, exist_ok=True)
@@ -99,18 +85,20 @@ def handle_content_backup(event):
                 file_size += len(chunk)
         
         size_mb = round(file_size / (1024 * 1024), 2)
+        
+        # Log แจ้งเตือนใน Railway เมื่อบันทึกสำเร็จ
         print(f"[SUCCESS] Saved: {full_path} ({size_mb} MB)", flush=True)
+        print(f"[SUCCESS] Time taken: {round(time.time() - start_time, 2)} sec", flush=True)
+        print("-" * 30, flush=True)
 
-        # 3. ตอบกลับสถานะ (ไม่มี Emoji)
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=f"Backup Complete\nCategory: {sub_folder}\nFile: {file_name}\nSize: {size_mb} MB")
-        )
+        # --- ลบส่วน line_bot_api.reply_message ออกแล้ว ---
 
     except Exception as e:
+        # Log แจ้งเตือนใน Railway เมื่อเกิดข้อผิดพลาด
         print(f"[ERROR] {str(e)}", flush=True)
+        print("-" * 30, flush=True)
 
-# --- 5. Status Command ---
+# --- 5. Status Command (คงไว้เผื่อคุณต้องการเช็คยอดไฟล์ด้วยตัวเอง) ---
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text(event):
@@ -127,4 +115,5 @@ def handle_text(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"[SYSTEM] Bot started on port {port}", flush=True)
+    print(f"[SYSTEM] Backup Path: {BASE_PATH}", flush=True)
     app.run(host="0.0.0.0", port=port)
