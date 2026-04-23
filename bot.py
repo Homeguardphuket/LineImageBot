@@ -27,26 +27,31 @@ def get_drive_service():
 
 def upload_to_drive(image_data, filename):
     service = get_drive_service()
-    media = MediaIoBaseUpload(
-        io.BytesIO(image_data),
-        mimetype="image/jpeg",
-        resumable=True # เพิ่ม resumable เพื่อช่วยเรื่องเสถียรภาพ
-    )
+    
+    # 1. กำหนด metadata ของไฟล์
     file_metadata = {
         "name": filename,
         "parents": [FOLDER_ID]
     }
     
+    # 2. เตรียมข้อมูลรูปภาพ
+    media = MediaIoBaseUpload(
+        io.BytesIO(image_data),
+        mimetype="image/jpeg",
+        resumable=True
+    )
+    
     try:
+        # 3. ใช้คำสั่ง create โดยเน้นย้ำเรื่อง supportsAllDrives
         file = service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id', # ขอรับ ID กลับมาเพื่อเช็คว่าสำเร็จไหม
-            supportsAllDrives=True
+            fields='id',
+            supportsAllDrives=True # บังคับให้รองรับการเขียนข้ามไดรฟ์
         ).execute()
-        print(f"อัปโหลดสำเร็จ! File ID: {file.get('id')}")
+        print(f"อัปโหลดสำเร็จ: {filename} (ID: {file.get('id')})")
     except Exception as e:
-        print(f"เกิดข้อผิดพลาดขณะอัปโหลด: {e}")
+        print(f"Error: {e}")
 
 @app.route("/callback", methods=["POST"])
 def callback():
