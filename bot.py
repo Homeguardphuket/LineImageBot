@@ -54,23 +54,25 @@ def callback():
 def handle_image(event):
     message_id = event.message.id
     
-    # 1. ดึงข้อมูลรูปภาพจาก LINE Server
+    # 1. ดึงข้อมูลรูปภาพจาก LINE
     content = line_bot_api.get_message_content(message_id)
     image_data = b"".join(content.iter_content())
     
     # 2. อัปโหลดไปยัง ImgBB
     image_url = upload_to_imgbb(image_data)
     
-    # 3. ตอบกลับผู้ใช้
+    # 3. จัดการเรื่องการแจ้งเตือน
     if image_url:
-        reply_text = f"บันทึกรูปภาพสำเร็จแล้ว!\nดูรูปได้ที่: {image_url}"
+        # พิมพ์ลง Log ของ Railway แทนการส่งข้อความเข้าไลน์
+        print(f"บันทึกรูปสำเร็จ: {image_url}")
     else:
-        reply_text = "เกิดข้อผิดพลาดในการบันทึกรูปภาพ กรุณาลองใหม่อีกครั้ง"
-        
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=reply_text)
-    )
+        print("เกิดข้อผิดพลาดในการอัปโหลดไป ImgBB")
+
+    # --- ลบหรือคอมเมนต์ส่วนด้านล่างนี้ออก เพื่อไม่ให้บอทตอบกลับในไลน์ ---
+    # line_bot_api.reply_message(
+    #     event.reply_token,
+    #     TextSendMessage(text=f"บันทึกเรียบร้อย: {image_url}")
+    # )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
