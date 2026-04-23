@@ -1,75 +1,43 @@
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
-from linebot.models import MessageEvent, ImageMessage
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
-from google.oauth2 import service_account
-import os, datetime, io, json
+from linebot.models import MessageEvent, ImageMessage, TextSendMessage
+import os, datetime, base64, requests
 
 app = Flask(__name__)
 
+# ดึงค่า Config ต่างๆ จาก Environment Variables ใน Railway
 LINE_TOKEN = os.environ.get("LINE_TOKEN")
 LINE_SECRET = os.environ.get("LINE_SECRET")
-FOLDER_ID = os.environ.get("FOLDER_ID")
-GOOGLE_CREDS = os.environ.get("GOOGLE_CREDS")
+IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY")
 
 line_bot_api = LineBotApi(LINE_TOKEN)
 handler = WebhookHandler(LINE_SECRET)
 
-# เชื่อมต่อ Google Drive
-def get_drive_service():
-    creds_dict = json.loads(GOOGLE_CREDS)
-    creds = service_account.Credentials.from_service_account_info(
-        creds_dict,
-        scopes=["https://www.googleapis.com/auth/drive"]
-    )
-    return build("drive", "v3", credentials=creds)
-
-def upload_to_drive(image_data, filename):
-    service = get_drive_service()
+def upload_to_imgbb(image_data):
+    """ฟังก์ชันอัปโหลดรูปภาพไปยัง ImgBB API"""
+    url = "https://api.imgbb.com/1/upload"
     
-    file_metadata = {
-        "name": filename,
-        "parents": [FOLDER_ID]
+    # แปลง Binary Data ของรูปภาพเป็น Base64
+    base64_image = base64.b64encode(image_data)
+    
+    payload = {
+        "key": IMGBB_API_KEY,
+        "image": base64_image
     }
     
-    media = MediaIoBaseUpload(
-        io.BytesIO(image_data),
-        mimetype="image/jpeg",
-        resumable=True
-    )
-    
     try:
-        # 1. สร้างไฟล์ตามปกติ
-        file = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id, owners', # ขอข้อมูล owner กลับมาด้วย
-            supportsAllDrives=True
-        ).execute()
+        response = requests.post(url, data=payload)
+        result = response.json()
         
-        file_id = file.get('id')
-        print(f"ไฟล์ถูกสร้างแล้ว ID: {file_id}")
-
-        # 2. บังคับโอนสิทธิ์ความเป็นเจ้าของ (Permission) ให้บัญชีหลักของคุณ
-        # เพื่อให้ไฟล์ไปกินพื้นที่โควตา 20GB ของมหาลัยคุณ แทน Service Account
-        user_permission = {
-            'type': 'user',
-            'role': 'owner',
-            'emailAddress': 'lerdnatchai.bank@gmail.com' # ใส่ Email หลักของคุณที่นี่
-        }
-        
-        service.permissions().create(
-            fileId=file_id,
-            body=user_permission,
-            transferOwnership=True, # สำคัญมาก: โอนความเป็นเจ้าของ
-            supportsAllDrives=True
-        ).execute()
-        
-        print(f"โอนความเป็นเจ้าของสำเร็จ!")
-
+        if result["success"]:
+            # คืนค่า URL ของรูปภาพที่อัปโหลดสำเร็จ
+            return result["data"]["url"]
+        else:
+            print(f"ImgBB Error: {result['error']['message']}")
+            return None
     except Exception as e:
-        print(f"เกิดข้อผิดพลาด: {e}")
+        print(f"Connection Error: {e}")
+        return None
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -85,11 +53,24 @@ def callback():
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     message_id = event.message.id
+    
+    # 1. ดึงข้อมูลรูปภาพจาก LINE Server
     content = line_bot_api.get_message_content(message_id)
     image_data = b"".join(content.iter_content())
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{message_id}.jpg"
-    upload_to_drive(image_data, filename)
+    
+    # 2. อัปโหลดไปยัง ImgBB
+    image_url = upload_to_imgbb(image_data)
+    
+    # 3. ตอบกลับผู้ใช้
+    if image_url:
+        reply_text = f"บันทึกรูปภาพสำเร็จแล้ว!\nดูรูปได้ที่: {image_url}"
+    else:
+        reply_text = "เกิดข้อผิดพลาดในการบันทึกรูปภาพ กรุณาลองใหม่อีกครั้ง"
+        
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=reply_text)
+    )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
