@@ -1,8 +1,9 @@
 import os
+import time
+import base64
+import requests
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
-from linebot.models import MessageEvent, ImageMessage, FileMessage, TextSendMessage # เพิ่ม FileMessage
-import os, datetime, base64, requests
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
     MessageEvent, TextMessage, ImageMessage, 
@@ -11,37 +12,37 @@ from linebot.models import (
 
 app = Flask(__name__)
 
-# ดึงค่า Config จาก Railway
-LINE_TOKEN = os.environ.get("LINE_TOKEN")
-LINE_SECRET = os.environ.get("LINE_SECRET")
-IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY")
-# --- 1. ตั้งค่า LINE Credentials (แนะนำให้ใส่ใน Environment Variables) ---
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', 'YOUR_TOKEN')
-LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', 'YOUR_SECRET')
+# --- 1. การตั้งค่า Config (ดึงจาก Railway Variables) ---
+# แนะนำให้ตั้งชื่อใน Railway ให้ตรงตามนี้ครับ
+LINE_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
+LINE_SECRET = os.getenv('LINE_CHANNEL_SECRET')
+IMGBB_KEY = os.getenv('IMGBB_API_KEY')
 
 line_bot_api = LineBotApi(LINE_TOKEN)
 handler = WebhookHandler(LINE_SECRET)
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-def upload_to_imgbb(image_data):
-    """ฟังก์ชันอัปโหลดรูปภาพไปยัง ImgBB"""
-    url = "https://api.imgbb.com/1/upload"
-    base64_image = base64.b64encode(image_data)
-    payload = {
-        "key": IMGBB_API_KEY,
-        "image": base64_image
-    }
-    try:
-        response = requests.post(url, data=payload)
-        result = response.json()
-        if result["success"]:
-            return result["data"]["url"]
-# --- 2. ตั้งค่า Path สำหรับการจัดเก็บ (โครงสร้างตามที่ระบุ) ---
+# พาธหลักสำหรับเก็บไฟล์ใน Railway
 BASE_PATH = "/app/LineBackup"
 
+# --- 2. ฟังก์ชันช่วยงาน (Helper Functions) ---
+
+def upload_to_imgbb(image_data):
+    """อัปโหลดรูปไป ImgBB (ถ้าต้องการใช้)"""
+    if not IMGBB_KEY:
+        return None
+    url = "https://api.imgbb.com/1/upload"
+    payload = {
+        "key": IMGBB_KEY,
+        "image": base64.b64encode(image_data)
+    }
+    try:
+        res = requests.post(url, data=payload)
+        return res.json()["data"]["url"] if res.json()["success"] else None
+    except:
+        return None
+
 def get_storage_info(event):
-    """วิเคราะห์ Message และส่งคืน (ชื่อโฟลเดอร์ย่อย, ชื่อไฟล์)"""
+    """วิเคราะห์ประเภทไฟล์และกำหนดโฟลเดอร์ปลายทาง"""
     if isinstance(event.message, ImageMessage):
         return "BackupImages", f"img_{event.message.id}.jpg"
         
@@ -49,122 +50,81 @@ def get_storage_info(event):
         return "BackupVideos", f"video_{event.message.id}.mp4"
         
     elif isinstance(event.message, FileMessage):
-        file_name = event.message.file_name
-        ext = os.path.splitext(file_name)[1].lower()
+        f_name = event.message.file_name
+        ext = os.path.splitext(f_name)[1].lower()
         
-        # คัดแยก Archives กับ Documents
-        archive_exts = ['.zip', '.rar', '.7z', '.tar', '.gz']
-        if ext in archive_exts:
-            return "BackupArchives", file_name
+        # คัดแยกกลุ่ม Archives
+        if ext in ['.zip', '.rar', '.7z', '.tar', '.gz']:
+            return "BackupArchives", f_name
         else:
-            print(f"ImgBB Error: {result['error']['message']}")
-            return None
-    except Exception as e:
-        print(f"Connection Error: {e}")
-        return None
-            return "BackupDocments", file_name # สะกดตามความต้องการผู้ใช้
+            return "BackupDocments", f_name # สะกดตามโครงสร้างเดิมของคุณ
             
     return "Others", f"file_{event.message.id}"
 
-@app.route("/callback", methods=["POST"])
-# --- 3. Webhook Endpoint ---
+# --- 3. Webhook Route ---
+
 @app.route("/callback", methods=['POST'])
 def callback():
-    signature = request.headers["X-Line-Signature"]
-    signature = request.headers['X-Line-Signature']
+    signature = request.headers.get('X-Line-Signature', '')
     body = request.get_data(as_text=True)
     try:
         handler.handle(body, signature)
-    except Exception as e:
-        print(f"Error: {e}")
     except InvalidSignatureError:
         abort(400)
-    return "OK"
     return 'OK'
 
-# --- ส่วนเดิมสำหรับรูปภาพ ---
-@handler.add(MessageEvent, message=ImageMessage)
-def handle_image(event):
-    message_id = event.message.id
-    content = line_bot_api.get_message_content(message_id)
-    image_data = b"".join(content.iter_content())
-    image_url = upload_to_imgbb(image_data)
-    if image_url:
-        print(f"บันทึกรูปสำเร็จ: {image_url}")
-# --- 4. Handler สำหรับการ Backup ข้อมูล ---
+# --- 4. Main Backup Handler (รวมทุกประเภทไฟล์ในที่เดียว) ---
+
 @handler.add(MessageEvent, message=(ImageMessage, VideoMessage, FileMessage))
 def handle_content_backup(event):
+    start_time = time.time()
     try:
-        # กำหนดโฟลเดอร์และชื่อไฟล์
+        # 1. ระบุตำแหน่งจัดเก็บ
         sub_folder, file_name = get_storage_info(event)
         target_dir = os.path.join(BASE_PATH, sub_folder)
         
-        # สร้างโฟลเดอร์ถ้ายังไม่มี
+        print(f"[INFO] Processing: {file_name} in {sub_folder}", flush=True)
+
         if not os.path.exists(target_dir):
             os.makedirs(target_dir, exist_ok=True)
-            
-        # ดึงเนื้อหาไฟล์จาก LINE Server
+
+        # 2. ดาวน์โหลดข้อมูลจาก LINE
         message_content = line_bot_api.get_message_content(event.message.id)
         full_path = os.path.join(target_dir, file_name)
         
-        # บันทึกไฟล์ (Binary Mode)
+        file_size = 0
         with open(full_path, 'wb') as fd:
             for chunk in message_content.iter_content():
                 fd.write(chunk)
-                
-        print(f">>> [SUCCESS] Saved: {full_path}")
+                file_size += len(chunk)
         
-        # ตอบกลับยืนยัน (สามารถเอาออกได้ถ้าไม่ต้องการให้บอทตอบ)
+        size_mb = round(file_size / (1024 * 1024), 2)
+        print(f"[SUCCESS] Saved: {full_path} ({size_mb} MB)", flush=True)
+
+        # 3. ตอบกลับสถานะ (ไม่มี Emoji)
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text=f"สำรองข้อมูลเรียบร้อย!\n📂 หมวดหมู่: {sub_folder}\n📄 ชื่อไฟล์: {file_name}")
+            TextSendMessage(text=f"Backup Complete\nCategory: {sub_folder}\nFile: {file_name}\nSize: {size_mb} MB")
         )
-        
-    except Exception as e:
-        print(f">>> [ERROR] {str(e)}")
-        # ในกรณีใช้งานจริงอาจเลือกไม่ตอบกลับเมื่อ Error เพื่อความเงียบ
 
-# --- ส่วนใหม่สำหรับไฟล์เอกสาร (PDF, Word, Excel, PPT) ---
-@handler.add(MessageEvent, message=FileMessage)
-def handle_file(event):
-    message_id = event.message.id
-    file_name = event.message.file_name # ชื่อไฟล์ต้นฉบับ
-    
-    # ดึงข้อมูลไฟล์จาก LINE
-    content = line_bot_api.get_message_content(message_id)
-    
-    # หมายเหตุ: ImgBB ไม่สามารถเก็บไฟล์เอกสารได้ (เก็บได้เฉพาะรูปภาพ)
-    # หากต้องการเก็บเอกสาร แนะนำให้บันทึกลงเครื่อง Server ชั่วคราว หรือใช้บริการอื่น
-    
-    # ตัวอย่างการบันทึกลงเครื่อง Server (Railway) ในโฟลเดอร์ downloads
-    save_path = f"./downloads/{file_name}"
-    os.makedirs("./downloads", exist_ok=True)
-    
-    with open(save_path, "wb") as f:
-        for chunk in content.iter_content():
-            f.write(chunk)
-    
-    print(f"บันทึกไฟล์เอกสารสำเร็จ: {save_path}")
-# --- 5. คำสั่งพิเศษสำหรับเช็คไฟล์ผ่าน LINE (ทางเลือก) ---
+    except Exception as e:
+        print(f"[ERROR] {str(e)}", flush=True)
+
+# --- 5. Status Command ---
+
 @handler.add(MessageEvent, message=TextMessage)
-def handle_text_command(event):
-    user_text = event.message.text
-    if user_text == "/status":
-        status_msg = "สถานะการสำรองข้อมูล:\n"
+def handle_text(event):
+    if event.message.text == "/status":
+        msg = "Storage Status:\n"
         folders = ["BackupImages", "BackupVideos", "BackupArchives", "BackupDocments"]
         for f in folders:
             path = os.path.join(BASE_PATH, f)
             count = len(os.listdir(path)) if os.path.exists(path) else 0
-            status_msg += f"- {f}: {count} ไฟล์\n"
+            msg += f"- {f}: {count} files\n"
         
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=status_msg)
-        )
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg))
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    print(f"[SYSTEM] Bot started on port {port}", flush=True)
     app.run(host="0.0.0.0", port=port)
-    # รันบนพอร์ตที่ Railway กำหนด
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
