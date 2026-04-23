@@ -28,13 +28,11 @@ def get_drive_service():
 def upload_to_drive(image_data, filename):
     service = get_drive_service()
     
-    # 1. กำหนด metadata ของไฟล์
     file_metadata = {
         "name": filename,
         "parents": [FOLDER_ID]
     }
     
-    # 2. เตรียมข้อมูลรูปภาพ
     media = MediaIoBaseUpload(
         io.BytesIO(image_data),
         mimetype="image/jpeg",
@@ -42,16 +40,36 @@ def upload_to_drive(image_data, filename):
     )
     
     try:
-        # 3. ใช้คำสั่ง create โดยเน้นย้ำเรื่อง supportsAllDrives
+        # 1. สร้างไฟล์ตามปกติ
         file = service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id',
-            supportsAllDrives=True # บังคับให้รองรับการเขียนข้ามไดรฟ์
+            fields='id, owners', # ขอข้อมูล owner กลับมาด้วย
+            supportsAllDrives=True
         ).execute()
-        print(f"อัปโหลดสำเร็จ: {filename} (ID: {file.get('id')})")
+        
+        file_id = file.get('id')
+        print(f"ไฟล์ถูกสร้างแล้ว ID: {file_id}")
+
+        # 2. บังคับโอนสิทธิ์ความเป็นเจ้าของ (Permission) ให้บัญชีหลักของคุณ
+        # เพื่อให้ไฟล์ไปกินพื้นที่โควตา 20GB ของมหาลัยคุณ แทน Service Account
+        user_permission = {
+            'type': 'user',
+            'role': 'owner',
+            'emailAddress': 'lerdnatchai.bank@gmail.com' # ใส่ Email หลักของคุณที่นี่
+        }
+        
+        service.permissions().create(
+            fileId=file_id,
+            body=user_permission,
+            transferOwnership=True, # สำคัญมาก: โอนความเป็นเจ้าของ
+            supportsAllDrives=True
+        ).execute()
+        
+        print(f"โอนความเป็นเจ้าของสำเร็จ!")
+
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"เกิดข้อผิดพลาด: {e}")
 
 @app.route("/callback", methods=["POST"])
 def callback():
