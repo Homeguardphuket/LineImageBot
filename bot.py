@@ -35,10 +35,11 @@ def upload_to_drive(image_data, filename):
         "name": filename,
         "parents": [FOLDER_ID]
     }
+    # เพิ่มการตั้งค่าเพื่อรองรับทั้ง My Drive และ Shared Drive ให้สมบูรณ์
     service.files().create(
         body=file_metadata,
         media_body=media,
-        supportsAllDrives=True  # ⬅️ เพิ่มบรรทัดนี้
+        supportsAllDrives=True,  # มีอยู่เดิมแล้ว
     ).execute()
     print(f"อัปโหลดไป Drive แล้ว: {filename}")
 
