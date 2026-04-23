@@ -37,7 +37,8 @@ def upload_to_drive(image_data, filename):
     }
     service.files().create(
         body=file_metadata,
-        media_body=media
+        media_body=media,
+        supportsAllDrives=True  # ⬅️ เพิ่มบรรทัดนี้
     ).execute()
     print(f"อัปโหลดไป Drive แล้ว: {filename}")
 
