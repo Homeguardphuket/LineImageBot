@@ -2,7 +2,7 @@ import os
 import time
 import requests
 import re
-from datetime import datetime # เพิ่มสำหรับจัดการวันที่
+from datetime import datetime # สำหรับจัดการวันที่
 from requests.auth import HTTPBasicAuth
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -38,7 +38,8 @@ def ensure_nas_folder(full_path):
     current_path = f"{NAS_URL}"
     for part in parts:
         current_path += f"/{part}"
-        # ลองสร้างโฟลเดอร์ (ถ้ามีอยู่แล้วจะตอบกลับ 405 Method Not Allowed)
+        # ลองสร้างโฟลเดอร์ (ใช้ MKCOL)
+        # ถ้ามีอยู่แล้ว NAS จะตอบกลับ 405 (Method Not Allowed) ซึ่งเราข้ามได้
         requests.request(
             'MKCOL', 
             current_path, 
@@ -46,6 +47,7 @@ def ensure_nas_folder(full_path):
         )
 
 def get_group_name(event):
+    """ดึงชื่อกลุ่มเพื่อใช้เป็นชื่อโฟลเดอร์หลัก"""
     if event.source.type == 'group':
         try:
             group_id = event.source.group_id
@@ -56,9 +58,9 @@ def get_group_name(event):
     return None
 
 def get_storage_info(event, group_folder):
-    """กำหนดโครงสร้างโฟลเดอร์: ชื่อกลุ่ม/ประเภทไฟล์/ปปปป-ดด-วว/ไฟล์"""
-    # ดึงวันที่ปัจจุบัน (รูปแบบ 2024-04-24)
-    today_str = datetime.now().strftime('%Y-%m-%d')
+    """กำหนดโครงสร้างโฟลเดอร์: ชื่อกลุ่ม/ประเภทไฟล์/วัน-เดือน-ปี/ไฟล์"""
+    # เปลี่ยนเป็นรูปแบบ วัน-เดือน-ปี (เช่น 24-04-2026)
+    today_str = datetime.now().strftime('%d-%m-%Y')
     
     if isinstance(event.message, ImageMessage):
         sub_folder = "BackupImages"
@@ -69,9 +71,10 @@ def get_storage_info(event, group_folder):
     elif isinstance(event.message, FileMessage):
         file_name = event.message.file_name
         ext = os.path.splitext(file_name)[1].lower()
+        
         if ext in ['.zip', '.rar', '.7z', '.tar', '.gz']:
             sub_folder = "BackupArchives"
-        elif ext in ['.dwg', '.dxf', '.dwt']:
+        elif ext in ['.dwg', '.dxf', '.dwt']: # รองรับไฟล์ CAD
             sub_folder = "BackupCAD"
         else:
             sub_folder = "BackupDocuments"
@@ -79,7 +82,7 @@ def get_storage_info(event, group_folder):
         sub_folder = "Others"
         file_name = f"file_{event.message.id}"
             
-    # โครงสร้างใหม่: ชื่อกลุ่ม/ประเภทไฟล์/วันที่
+    # โครงสร้าง Path: ชื่อกลุ่ม/ประเภทไฟล์/วันที่
     rel_path = f"{group_folder}/{sub_folder}/{today_str}"
     return rel_path, file_name
 
@@ -104,7 +107,7 @@ def handle_content_backup(event):
     try:
         rel_path, file_name = get_storage_info(event, group_folder)
         
-        # 1. ตรวจสอบและสร้างโฟลเดอร์ LineBackup และโฟลเดอร์ย่อย
+        # ตรวจสอบและสร้างโฟลเดอร์ใน NAS อัตโนมัติ (ตั้งแต่ LineBackup จนถึงโฟลเดอร์วันที่)
         ensure_nas_folder(f"LineBackup/{rel_path}")
         
         target_url = f"{NAS_URL}/LineBackup/{rel_path}/{file_name}"
@@ -112,7 +115,7 @@ def handle_content_backup(event):
 
         message_content = line_bot_api.get_message_content(event.message.id)
         
-        # 2. ส่งข้อมูลเข้า NAS
+        # ส่งไฟล์เข้า NAS
         response = requests.put(
             target_url,
             data=message_content.content,
@@ -134,7 +137,7 @@ def handle_text(event):
     if event.message.text == "/status":
         group_name = get_group_name(event)
         if group_name:
-            today = datetime.now().strftime('%Y-%m-%d')
+            today = datetime.now().strftime('%d-%m-%Y')
             msg = f"Group Backup: Active\nGroup: {group_name}\nDate Folder: {today}"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg))
 
